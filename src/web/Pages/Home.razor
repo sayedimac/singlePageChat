@@ -1,0 +1,200 @@
+@page "/"
+@using Microsoft.AspNetCore.Components.Forms
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject IJSRuntime Js
+
+<PageTitle>Chat</PageTitle>
+
+<div class="container py-4">
+    <h1 class="mb-3">Foundry Chat</h1>
+
+    <div class="card mb-3">
+        <div class="card-body chat-history" aria-live="polite">
+            @if (messages.Count == 0)
+            {
+                <p class="text-muted mb-0">Start by sending a message, uploading a document, or recording your voice.</p>
+            }
+            else
+            {
+                @foreach (var item in messages)
+                {
+                    <div class="mb-2">
+                        <strong>@item.Role:</strong> @item.Content
+                    </div>
+                }
+            }
+        </div>
+    </div>
+
+    <div class="input-group mb-3">
+        <input class="form-control" placeholder="Type your message" @bind="prompt" @bind:event="oninput" />
+        <button class="btn btn-primary" @onclick="SendPromptAsync" disabled="@isBusy">Send</button>
+    </div>
+
+    <div class="d-flex flex-wrap gap-2 mb-3">
+        <InputFile OnChange="UploadDocumentAsync" class="form-control" />
+        <button class="btn btn-outline-secondary" @onclick="StartRecordingAsync" disabled="@isRecording || isBusy">Record voice</button>
+        <button class="btn btn-outline-secondary" @onclick="StopRecordingAsync" disabled="@(!isRecording) || isBusy">Stop recording</button>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(status))
+    {
+        <div class="alert alert-info mb-0">@status</div>
+    }
+</div>
+
+@code {
+    private readonly List<ChatItem> messages = [];
+    private string? prompt;
+    private string? status;
+    private bool isBusy;
+    private bool isRecording;
+
+    private async Task SendPromptAsync()
+    {
+        if (string.IsNullOrWhiteSpace(prompt) || isBusy)
+        {
+            return;
+        }
+
+        var text = prompt.Trim();
+        prompt = string.Empty;
+        messages.Add(new ChatItem("You", text));
+        status = "Sending...";
+        isBusy = true;
+
+        try
+        {
+            var response = await Http.PostAsJsonAsync("api/chat", new { message = text });
+            if (!response.IsSuccessStatusCode)
+            {
+                status = $"Chat failed: {(int)response.StatusCode}";
+                return;
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<ChatResponse>();
+            messages.Add(new ChatItem("Agent", payload?.Response ?? "No response body."));
+            status = "Message delivered.";
+        }
+        catch (Exception ex)
+        {
+            status = $"Chat error: {ex.Message}";
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private async Task UploadDocumentAsync(InputFileChangeEventArgs args)
+    {
+        if (isBusy)
+        {
+            return;
+        }
+
+        var file = args.File;
+        if (file is null)
+        {
+            status = "No file selected.";
+            return;
+        }
+
+        isBusy = true;
+        status = "Uploading document...";
+
+        try
+        {
+            using var content = new MultipartFormDataContent();
+            using var stream = file.OpenReadStream(25 * 1024 * 1024);
+            using var streamContent = new StreamContent(stream);
+            streamContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(file.ContentType);
+            content.Add(streamContent, "file", file.Name);
+
+            var response = await Http.PostAsync("api/chat/documents", content);
+            if (!response.IsSuccessStatusCode)
+            {
+                status = $"Upload failed: {(int)response.StatusCode}";
+                return;
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<UploadResponse>();
+            messages.Add(new ChatItem("System", payload?.Message ?? $"Uploaded {file.Name}."));
+            status = "Document uploaded.";
+        }
+        catch (Exception ex)
+        {
+            status = $"Upload error: {ex.Message}";
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private async Task StartRecordingAsync()
+    {
+        if (isBusy || isRecording)
+        {
+            return;
+        }
+
+        await Js.InvokeVoidAsync("chatRecorder.start");
+        isRecording = true;
+        status = "Recording started.";
+    }
+
+    private async Task StopRecordingAsync()
+    {
+        if (isBusy || !isRecording)
+        {
+            return;
+        }
+
+        isBusy = true;
+
+        try
+        {
+            var recording = await Js.InvokeAsync<RecordedAudio?>("chatRecorder.stop");
+            isRecording = false;
+
+            if (recording is null || string.IsNullOrWhiteSpace(recording.Base64))
+            {
+                status = "No recording captured.";
+                return;
+            }
+
+            using var content = new MultipartFormDataContent();
+            var bytes = Convert.FromBase64String(recording.Base64);
+            using var fileContent = new ByteArrayContent(bytes);
+            fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(recording.ContentType ?? "audio/webm");
+            content.Add(fileContent, "file", string.IsNullOrWhiteSpace(recording.FileName) ? "voice.webm" : recording.FileName);
+
+            var response = await Http.PostAsync("api/chat/documents", content);
+            if (!response.IsSuccessStatusCode)
+            {
+                status = $"Voice upload failed: {(int)response.StatusCode}";
+                return;
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<UploadResponse>();
+            messages.Add(new ChatItem("System", payload?.Message ?? "Voice message uploaded."));
+            status = "Voice message uploaded.";
+        }
+        catch (Exception ex)
+        {
+            isRecording = false;
+            status = $"Recording error: {ex.Message}";
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private sealed record ChatItem(string Role, string Content);
+    private sealed record ChatResponse(string Response);
+    private sealed record UploadResponse(string Message, string? DocumentId);
+    private sealed record RecordedAudio(string? FileName, string? ContentType, string? Base64);
+}
