@@ -7,6 +7,8 @@ Blazor WebAssembly + Azure Functions (.NET 10) starter for a chat UI backed by a
 - `src/web`: static Blazor WebAssembly chat interface
 - `src/api`: Azure Functions backend
 
+
+
 ## Features
 
 - Chat prompt endpoint (`POST /api/chat`)
