@@ -38,15 +38,15 @@
         <section class="sections-grid" aria-label="Generated content sections">
             @for (var index = 0; index < currentPage.Sections.Count; index++)
             {
-                var section = currentPage.Sections[index];
-                var isActive = string.Equals(section.Id, focusedSectionId, StringComparison.Ordinal);
+                var pageSection = currentPage.Sections[index];
+                var isActive = string.Equals(pageSection.Id, focusedSectionId, StringComparison.Ordinal);
                 <button class="section-card @(isActive ? "active" : string.Empty)"
                        type="button"
-                       @onmouseover="() => SetFocusedSection(section.Id)"
+                       @onmouseover="() => SetFocusedSection(pageSection.Id)"
                        @onmouseout="() => ClearFocusedSection()"
-                       @onclick="() => DrillIntoSectionAsync(section)">
+                       @onclick="() => DrillIntoSectionAsync(pageSection)">
                     <span class="section-index">Section @(index + 1)</span>
-                    <p>@section.Text</p>
+                    <p>@pageSection.Text</p>
                 </button>
             }
         </section>
