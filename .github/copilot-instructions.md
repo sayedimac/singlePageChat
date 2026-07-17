@@ -97,6 +97,14 @@ Notes & best practices
 - Use CI to build both projects so the deployment artifact matches local behavior.
 - Add a root README, .gitignore, and a solution-level launch/debug configs as needed.
 
+## Razor / Blazor build safety (Azure Static Web Apps / Oryx)
+
+Oryx (the Azure Static Web Apps build engine) may use an earlier .NET 10 patch release than your local SDK. To prevent Razor compiler errors that only surface in the CI/CD pipeline:
+
+- **Avoid Razor directive keywords as variable names** in `.razor` files. The following identifiers are reserved by the Razor parser and **must not** be used as loop variables, local variables, or parameters in markup code: `section`, `page`, `model`, `inject`, `layout`, `functions`, `code`, `inherits`, `namespace`, `using`, `implements`, `attribute`, `addTagHelper`, `removeTagHelper`, `tagHelperPrefix`. For example, use `sec` instead of `section` and `item` instead of `page`.
+- **Wrap inline property accesses in `@(…)`**: write `@(variable.Property)` rather than `@variable.Property` whenever the variable name could be mistaken for a Razor directive. This eliminates ambiguity across SDK patch versions and produces clearer compiler errors when something is wrong.
+- **Run `dotnet publish src/web/web.csproj -c Release`** locally before pushing, in addition to `dotnet build`. Oryx invokes publish under the hood, and some errors only appear during publish.
+
 If you want, I can:
 - produce a sample HTTP trigger function code
 - produce a ready-to-use GitHub Actions file with exact Azure Static Web Apps action configuration
