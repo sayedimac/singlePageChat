@@ -1,5 +1,6 @@
 @page "/"
 @using System.Net.Http.Json
+@using System.Text.Json
 @inject HttpClient Http
 
 <div class="single-page-shell">
@@ -23,33 +24,66 @@
     </header>
 
     <main class="experience-stage">
-        <section class="hero-panel">
-            <div>
-                <span class="eyebrow">Live canvas</span>
-                <h2>@currentPage.Title</h2>
-                <p class="hero-summary">@currentPage.Summary</p>
-            </div>
-            <div class="hero-focus">
-                <span class="hero-focus-label">Current focus</span>
-                <strong>@GetCurrentFocusLabel()</strong>
-            </div>
-        </section>
-
-        <section class="sections-grid" aria-label="Generated content sections">
-            @for (var index = 0; index < currentPage.Sections.Count; index++)
+        <div class="page-header">
+            @if (currentPage.Breadcrumb is { Count: > 0 } breadcrumbs)
             {
-                var pageSection = currentPage.Sections[index];
-                var isActive = string.Equals(pageSection.Id, focusedSectionId, StringComparison.Ordinal);
-                <button class="section-card @(isActive ? "active" : string.Empty)"
-                       type="button"
-                       @onmouseover="() => SetFocusedSection(pageSection.Id)"
-                       @onmouseout="() => ClearFocusedSection()"
-                       @onclick="() => DrillIntoSectionAsync(pageSection)">
-                    <span class="section-index">Section @(index + 1)</span>
-                    <p>@pageSection.Text</p>
-                </button>
+                <nav class="page-breadcrumb" aria-label="Breadcrumb">
+                    @for (var i = 0; i < breadcrumbs.Count; i++)
+                    {
+                        var crumb = breadcrumbs[i];
+                        var isLast = i == breadcrumbs.Count - 1;
+                        if (isLast)
+                        {
+                            <span class="crumb-item crumb-current">@crumb.Label</span>
+                        }
+                        else
+                        {
+                            <button class="crumb-item crumb-link" type="button" @onclick="GoBackAsync">@crumb.Label</button>
+                            <span class="crumb-sep">›</span>
+                        }
+                    }
+                </nav>
             }
-        </section>
+            <h2 class="page-title">@currentPage.Title</h2>
+            @if (!string.IsNullOrWhiteSpace(currentPage.Summary))
+            {
+                <p class="page-subtitle">@currentPage.Summary</p>
+            }
+        </div>
+
+        <div class="content-body" aria-label="Generated content">
+            @foreach (var rawSection in currentPage.Sections)
+            {
+                var section = rawSection;
+                var isActive = string.Equals(section.Id, focusedSectionId, StringComparison.Ordinal);
+                <div class="doc-section type-@section.SectionType @(isActive ? "active" : string.Empty)"
+                     title="@(string.IsNullOrWhiteSpace(section.HoverHint) ? "Click to explore further" : section.HoverHint)"
+                     role="button"
+                     tabindex="0"
+                     @onmouseover="() => SetFocusedSection(section.Id)"
+                     @onmouseout="ClearFocusedSection"
+                     @onclick="() => DrillIntoSectionAsync(section)"
+                     @onkeydown="(e) => HandleSectionKeyDown(e, section)">
+                    @if (!string.IsNullOrWhiteSpace(section.Heading))
+                    {
+                        <h3 class="doc-section-heading">@section.Heading</h3>
+                    }
+                    <p class="doc-section-body">@section.Body</p>
+                </div>
+            }
+            @if (currentPage.SuggestedActions is { Count: > 0 } actions)
+            {
+                <div class="doc-actions" aria-label="Suggested actions">
+                    @foreach (var rawAction in actions)
+                    {
+                        var action = rawAction;
+                        <button class="doc-action-btn" type="button" @onclick="() => DrillIntoActionAsync(action)">
+                            @action.Label →
+                        </button>
+                    }
+                </div>
+            }
+        </div>
     </main>
 
     <footer class="composer-panel">
@@ -69,13 +103,14 @@
 </div>
 
 @code {
-    // Shared suffix for drill-down requests.
-    private const string DrillPromptSuffix = "Keep the result as a compact, navigable page with a clear title, one sentence summary, and {0} short clickable sections.";
-    private const int MaxSections = 4;
-    private const int MaxSectionLength = 120;
+    private const int MaxSections = 8;
+    private const int MaxSectionLength = 200;
     private const int MinimumSectionLength = 10;
     private const int MaxTitleLength = 60;
-    private const int MaxSummaryLength = 140;
+    private const int MaxSummaryLength = 160;
+
+    private static readonly JsonSerializerOptions AgentJsonOptions = new() { PropertyNameCaseInsensitive = true };
+
     private readonly List<PageSnapshot> history = [];
     private PageSnapshot currentPage = CreateInitialPage();
     private string? prompt;
@@ -105,10 +140,31 @@
             return;
         }
 
-        var sanitizedSection = SanitizePromptSegment(section.Text);
-        var sanitizedTitle = SanitizePromptSegment(currentPage.Title);
-        var drillPrompt = $"Expand the section '{sanitizedSection}' inside the broader topic '{sanitizedTitle}'. {string.Format(DrillPromptSuffix, MaxSections)}";
-        await GeneratePageAsync(drillPrompt, section.Text);
+        var context = string.IsNullOrWhiteSpace(section.Heading)
+            ? SanitizePromptSegment(section.Body)
+            : $"{SanitizePromptSegment(section.Heading)}: {SanitizePromptSegment(section.Body)}";
+
+        var parentTopic = SanitizePromptSegment(currentPage.Title);
+        var drillPrompt = $"Drill deeper into '{context}' within the topic '{parentTopic}'.";
+        await GeneratePageAsync(drillPrompt, section.Heading ?? section.Body);
+    }
+
+    private async Task DrillIntoActionAsync(PageSuggestedAction action)
+    {
+        if (isBusy || action is null)
+        {
+            return;
+        }
+
+        await GeneratePageAsync(SanitizePromptSegment(action.Label), null);
+    }
+
+    private async Task HandleSectionKeyDown(KeyboardEventArgs e, PageSection section)
+    {
+        if (e.Key is "Enter" or " ")
+        {
+            await DrillIntoSectionAsync(section);
+        }
     }
 
     private async Task GeneratePageAsync(string request, string? sectionText)
@@ -125,7 +181,8 @@
 
         try
         {
-            var response = await Http.PostAsJsonAsync("api/chat", new { message = BuildGenerationPrompt(request, sectionText) });
+            var sanitizedMessage = SanitizePromptSegment(request);
+            var response = await Http.PostAsJsonAsync("api/chat", new { message = sanitizedMessage });
             var payload = response.IsSuccessStatusCode
                 ? await response.Content.ReadFromJsonAsync<ChatResponse>()
                 : null;
@@ -194,57 +251,124 @@
         focusedSectionId = null;
     }
 
-    private string GetCurrentFocusLabel()
-        => string.IsNullOrWhiteSpace(focusedSectionId)
-            ? "Explore a section"
-            : "Drill deeper";
+    // ── Page construction ────────────────────────────────────────────────────
 
-    private static string BuildGenerationPrompt(string request, string? sectionText)
+    private static PageSnapshot CreatePageFromResponse(string request, string body, string? sectionText)
     {
-        var sanitizedTopic = SanitizePromptSegment(string.IsNullOrWhiteSpace(sectionText)
-            ? request
-            : $"{request} focusing on {sectionText}");
+        var agentPage = TryParseAgentJson(body);
+        if (agentPage is not null)
+        {
+            return PageSnapshotFromAgentPage(request, agentPage, sectionText);
+        }
 
-        return $"Create a single-page briefing about {sanitizedTopic}. Return a concise title, a one-sentence summary, and {MaxSections} short clickable sections. Keep the content polished, modern, and easy to skim.";
+        // Fallback: parse plain-text response using regex and sentence splitting.
+        var title = ExtractTitle(body, request, sectionText);
+        var summary = ExtractSummary(body, request);
+        var sections = ExtractSections(body, request).ToList();
+        return new PageSnapshot(title, summary, request, sections, sectionText);
+    }
+
+    private static AgentPageDto? TryParseAgentJson(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return null;
+        }
+
+        // Locate the first '{' to skip any accidental leading whitespace or text.
+        var jsonStart = body.IndexOf('{');
+        if (jsonStart < 0)
+        {
+            return null;
+        }
+
+        var json = jsonStart > 0 ? body[jsonStart..] : body;
+
+        try
+        {
+            var wrapper = JsonSerializer.Deserialize<AgentPageResponse>(json, AgentJsonOptions);
+            return wrapper?.Page;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static PageSnapshot PageSnapshotFromAgentPage(string request, AgentPageDto page, string? sectionText)
+    {
+        var title = Truncate(page.Title ?? request, MaxTitleLength);
+        var summary = Truncate(page.Subtitle ?? page.Title ?? string.Empty, MaxSummaryLength);
+
+        var sections = (page.Sections ?? [])
+            .Where(s => !string.IsNullOrWhiteSpace(s.Body) || !string.IsNullOrWhiteSpace(s.Heading))
+            .Select(s => new PageSection(
+                Id: s.Id ?? $"s-{Guid.NewGuid():N}",
+                Body: Truncate(s.Body ?? string.Empty, MaxSectionLength),
+                Heading: s.Heading,
+                ClickIntent: s.ClickIntent ?? "drill_deeper",
+                HoverHint: s.HoverHint,
+                SectionType: NormalizeSectionType(s.Type)
+            ))
+            .ToList();
+
+        var breadcrumb = (page.Breadcrumb ?? [])
+            .Where(b => !string.IsNullOrWhiteSpace(b.Label))
+            .Select(b => new PageBreadcrumb(b.Label!, b.Intent ?? string.Empty))
+            .ToList();
+
+        var suggestedActions = (page.SuggestedActions ?? [])
+            .Where(a => !string.IsNullOrWhiteSpace(a.Label))
+            .Select(a => new PageSuggestedAction(a.Label!, a.Intent ?? string.Empty, a.TargetSectionId))
+            .ToList();
+
+        return new PageSnapshot(title, summary, request, sections, sectionText, breadcrumb, suggestedActions);
+    }
+
+    private static string NormalizeSectionType(string? raw)
+    {
+        return raw?.ToLowerInvariant() switch
+        {
+            "hero" => "hero",
+            "summary" => "summary",
+            "warning" => "warning",
+            "source" => "source",
+            "action" => "action",
+            "next" => "next",
+            _ => "card"
+        };
     }
 
     private static PageSnapshot CreateInitialPage()
     {
         return new PageSnapshot(
-            "A calm AI canvas",
-            "Start with a prompt and the page will turn into a navigable story with sections you can click.",
-            "Welcome",
-            new List<PageSection>
+            Title: "A calm AI canvas",
+            Summary: "Start with a prompt and the page will turn into a navigable story with sections you can click.",
+            Prompt: "Welcome",
+            Sections: new List<PageSection>
             {
-                new("intro-0", "Ask for a broad topic to build the first page."),
-                new("intro-1", "Hover a section to highlight the block you want to explore."),
-                new("intro-2", "Click once more to open an even tighter view.")
+                new(Id: "intro-0", Body: "Ask for a broad topic to build the first page.", Heading: "Start here"),
+                new(Id: "intro-1", Body: "Hover a section to highlight the block you want to explore.", Heading: "Hover to preview"),
+                new(Id: "intro-2", Body: "Click a section to drill deeper into that topic.", Heading: "Click to drill down")
             });
     }
 
     private static PageSnapshot CreateFallbackPage(string request, string? sectionText)
     {
         var topic = string.IsNullOrWhiteSpace(sectionText) ? request : sectionText;
-        var title = $"Exploring {topic}";
+        var title = $"Exploring {Truncate(topic, 40)}";
         var summary = $"A compact overview for {topic} that you can continue exploring.";
         var sections = new List<PageSection>
         {
-            new("fallback-0", $"Open the prompt with a richer question about {topic}."),
-            new("fallback-1", "Highlight a sentence to focus the next layer of detail."),
-            new("fallback-2", "Click once more to open an even tighter view.")
+            new(Id: "fallback-0", Body: $"Open the prompt with a richer question about {topic}.", Heading: "Refine your question"),
+            new(Id: "fallback-1", Body: "Hover a section to focus on the next layer of detail.", Heading: "Hover to preview"),
+            new(Id: "fallback-2", Body: "Click any section to drill deeper into that concept.", Heading: "Click to explore")
         };
 
         return new PageSnapshot(title, summary, request, sections, sectionText);
     }
 
-    private static PageSnapshot CreatePageFromResponse(string request, string response, string? sectionText)
-    {
-        var title = ExtractTitle(response, request, sectionText);
-        var summary = ExtractSummary(response, request);
-        var sections = ExtractSections(response, request).ToList();
-
-        return new PageSnapshot(title, summary, request, sections, sectionText);
-    }
+    // ── Plain-text fallback extraction ───────────────────────────────────────
 
     private static string ExtractTitle(string response, string request, string? sectionText)
     {
@@ -286,22 +410,20 @@
         }
 
         return fragments.Take(MaxSections)
-            .Select((fragment, index) => new PageSection($"section-{index}", Truncate(fragment, MaxSectionLength)));
+            .Select((fragment, index) => new PageSection(
+                Id: $"section-{index}",
+                Body: Truncate(fragment, MaxSectionLength)
+            ));
     }
 
     private static IEnumerable<string> SplitSentences(string value)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
-            return Array.Empty<string>();
+            return [];
         }
 
-        // Keep the parser lightweight and remove terminal punctuation for display.
         var cleaned = HomeRegexes.WhitespaceRegex().Replace(value, " ").Trim();
-        if (string.IsNullOrWhiteSpace(cleaned))
-        {
-            return Array.Empty<string>();
-        }
 
         return HomeRegexes.SentenceBoundaryRegex().Split(cleaned)
             .Select(part => part.Trim())
@@ -326,7 +448,6 @@
             return value;
         }
 
-        // Reserve one character for the ellipsis marker.
         var availableLength = Math.Max(1, maxLength - 1);
         return $"{value[..availableLength]}\u2026";
     }
@@ -338,9 +459,90 @@
             : value.Replace('\n', ' ').Replace('\r', ' ').Trim();
     }
 
+    // ── Data types ───────────────────────────────────────────────────────────
+
     private sealed record ChatResponse(string Response);
-    private sealed record PageSnapshot(string Title, string Summary, string Prompt, List<PageSection> Sections, string? SectionContext = null);
-    private sealed record PageSection(string Id, string Text);
+
+    private sealed record PageSnapshot(
+        string Title,
+        string Summary,
+        string Prompt,
+        List<PageSection> Sections,
+        string? SectionContext = null,
+        List<PageBreadcrumb>? Breadcrumb = null,
+        List<PageSuggestedAction>? SuggestedActions = null
+    );
+
+    private sealed record PageSection(
+        string Id,
+        string Body,
+        string? Heading = null,
+        string ClickIntent = "drill_deeper",
+        string? HoverHint = null,
+        string SectionType = "card"
+    );
+
+    private sealed record PageBreadcrumb(string Label, string Intent);
+
+    private sealed record PageSuggestedAction(string Label, string Intent, string? TargetSectionId = null);
+
+    // ── Agent JSON DTO types (mirrors the agent response schema) ─────────────
+
+    private sealed class AgentPageResponse
+    {
+        public AgentPageDto? Page { get; set; }
+    }
+
+    private sealed class AgentPageDto
+    {
+        public string? Title { get; set; }
+        public string? Subtitle { get; set; }
+        public string? Mode { get; set; }
+        public List<AgentBreadcrumbDto>? Breadcrumb { get; set; }
+        public List<AgentSectionDto>? Sections { get; set; }
+        public List<AgentActionDto>? SuggestedActions { get; set; }
+        public AgentNavigationDto? Navigation { get; set; }
+        public AgentStateDto? State { get; set; }
+    }
+
+    private sealed class AgentSectionDto
+    {
+        public string? Id { get; set; }
+        public string? Type { get; set; }
+        public string? Heading { get; set; }
+        public string? Body { get; set; }
+        public string? ClickIntent { get; set; }
+        public string? HoverHint { get; set; }
+        public int Priority { get; set; }
+    }
+
+    private sealed class AgentBreadcrumbDto
+    {
+        public string? Label { get; set; }
+        public string? Intent { get; set; }
+    }
+
+    private sealed class AgentActionDto
+    {
+        public string? Label { get; set; }
+        public string? Intent { get; set; }
+        public string? TargetSectionId { get; set; }
+    }
+
+    private sealed class AgentNavigationDto
+    {
+        public bool CanGoBack { get; set; }
+        public bool CanRefresh { get; set; }
+        public bool CanGoHome { get; set; }
+    }
+
+    private sealed class AgentStateDto
+    {
+        public string? PageTopic { get; set; }
+        public int Depth { get; set; }
+        public List<string>? SelectedPath { get; set; }
+        public string? SummaryOfPriorContext { get; set; }
+    }
 }
 
                                                                
