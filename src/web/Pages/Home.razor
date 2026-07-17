@@ -52,23 +52,22 @@
         </div>
 
         <div class="content-body" aria-label="Generated content">
-            @foreach (var rawSection in currentPage.Sections)
+            @foreach (var sec in currentPage.Sections)
             {
-                var section = rawSection;
-                var isActive = string.Equals(section.Id, focusedSectionId, StringComparison.Ordinal);
-                <div class="doc-section type-@section.SectionType @(isActive ? "active" : string.Empty)"
-                     title="@(string.IsNullOrWhiteSpace(section.HoverHint) ? "Click to explore further" : section.HoverHint)"
+                var isActive = string.Equals(sec.Id, focusedSectionId, StringComparison.Ordinal);
+                <div class="doc-section type-@(sec.SectionType) @(isActive ? "active" : string.Empty)"
+                     title="@(string.IsNullOrWhiteSpace(sec.HoverHint) ? "Click to explore further" : sec.HoverHint)"
                      role="button"
                      tabindex="0"
-                     @onmouseover="() => SetFocusedSection(section.Id)"
+                     @onmouseover="() => SetFocusedSection(sec.Id)"
                      @onmouseout="ClearFocusedSection"
-                     @onclick="() => DrillIntoSectionAsync(section)"
-                     @onkeydown="(e) => HandleSectionKeyDown(e, section)">
-                    @if (!string.IsNullOrWhiteSpace(section.Heading))
+                     @onclick="() => DrillIntoSectionAsync(sec)"
+                     @onkeydown="(e) => HandleSectionKeyDown(e, sec)">
+                    @if (!string.IsNullOrWhiteSpace(sec.Heading))
                     {
-                        <h3 class="doc-section-heading">@section.Heading</h3>
+                        <h3 class="doc-section-heading">@(sec.Heading)</h3>
                     }
-                    <p class="doc-section-body">@section.Body</p>
+                    <p class="doc-section-body">@(sec.Body)</p>
                 </div>
             }
             @if (currentPage.SuggestedActions is { Count: > 0 } actions)
